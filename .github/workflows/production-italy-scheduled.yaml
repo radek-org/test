@@ -1,7 +1,9 @@
 name: '[TEST] Deploy last ci tag to PRODUCTION-ITALY (scheduled)'
-permissions: write-all
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check_approval:
@@ -14,12 +16,12 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Read approval state from GitHub variable
+      - name: Read approval state
         id: check
         run: |
           TODAY=$(date -u +%Y-%m-%d)
-          STATUS=$(gh api /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
-            --jq '.value' 2>/dev/null || echo '{}')
+          STATUS=$(gh api /repos/radek-org/test/contents/.github/approval-state.json \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo '{}')
 
           APPROVED=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('true' if d.get('approved') and d.get('date') == '$TODAY' else 'false')" 2>/dev/null || echo 'false')
           APPROVER=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('approver','unknown'))" 2>/dev/null || echo 'unknown')
@@ -48,7 +50,7 @@ jobs:
               - type: section
                 text:
                   type: mrkdwn
-                  text: "[TEST] ⚠️ *Production-Italy deploy skipped*\n\nNo valid approval found for today. Deploy did not run."
+                  text: "[TEST] ⚠️ *Production-Italy deploy skipped*\n\nNo valid approval found for today."
 
   notify_starting:
     name: Notify deploy starting

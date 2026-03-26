@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
+  contents: write
 
 jobs:
   approval:
@@ -17,14 +17,21 @@ jobs:
         run: |
           TODAY=$(date -u +%Y-%m-%d)
           VALUE="{\"approved\":false,\"rejected\":false,\"date\":\"$TODAY\",\"approver\":\"\",\"approved_at\":\"\"}"
+          ENCODED=$(echo "$VALUE" | base64 -w 0)
 
-          # Create or update repo variable PRODUCTION_APPROVAL_STATE
-          gh api --method PATCH /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
-            -f name=PRODUCTION_APPROVAL_STATE \
-            -f "value=$VALUE" 2>/dev/null || \
-          gh api --method POST /repos/radek-org/test/actions/variables \
-            -f name=PRODUCTION_APPROVAL_STATE \
-            -f "value=$VALUE"
+          EXISTING_SHA=$(gh api /repos/radek-org/test/contents/.github/approval-state.json \
+            --jq '.sha' 2>/dev/null || echo '')
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api --method PUT /repos/radek-org/test/contents/.github/approval-state.json \
+              -f message="Reset approval state for $TODAY" \
+              -f "content=$ENCODED" \
+              -f "sha=$EXISTING_SHA"
+          else
+            gh api --method PUT /repos/radek-org/test/contents/.github/approval-state.json \
+              -f message="Create approval state for $TODAY" \
+              -f "content=$ENCODED"
+          fi
 
           echo "Approval state reset for $TODAY"
 
@@ -40,15 +47,11 @@ jobs:
               - type: section
                 text:
                   type: mrkdwn
-                  text: "*[TEST] Production deploy scheduled for today*\n\n• *production* deploys in ~12 minutes\n• *production-italy* deploys in ~17 minutes\n\nApproval required within the next 12 minutes. If not approved, deploy will be skipped."
+                  text: "*[TEST] Production deploy scheduled for today*\n\n• *production* deploys in ~7 minutes\n• *production-italy* deploys in ~12 minutes\n\nApproval required within the next 7 minutes."
               - type: section
                 text:
                   type: mrkdwn
                   text: "👉 <https://github.com/radek-org/test/actions/workflows/production-approve.yaml|Click here to Approve or Reject>\n_(GitHub → Actions → Run workflow)_"
-              - type: context
-                elements:
-                  - type: mrkdwn
-                    text: "Triggered at $(date -u '+%H:%M UTC')"
 
       - name: Wait for approval
         id: wait
@@ -58,8 +61,8 @@ jobs:
           echo "Waiting for approval for up to 25 minutes..."
 
           while [ "$(date -u +%s)" -lt "$DEADLINE" ]; do
-            STATUS=$(gh api /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
-              --jq '.value' 2>/dev/null || echo '{}')
+            STATUS=$(gh api /repos/radek-org/test/contents/.github/approval-state.json \
+              --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo '{}')
 
             DATE=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('date',''))" 2>/dev/null)
             APPROVED=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(str(d.get('approved',False)).lower())" 2>/dev/null)
@@ -82,7 +85,7 @@ jobs:
               exit 1
             fi
 
-            echo "Not yet approved — checking again in 30s (deadline: $(date -u -d @$DEADLINE '+%H:%M UTC'))"
+            echo "Not yet — checking again in 30s"
             sleep 30
           done
 
@@ -98,12 +101,12 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
-            text: "[TEST] ✅ Production deploy approved — deploys will start shortly"
+            text: "[TEST] ✅ Production deploy approved"
             blocks:
               - type: section
                 text:
                   type: mrkdwn
-                  text: "[TEST] ✅ *Production deploy approved*\n\nApproved by *${{ steps.wait.outputs.approver }}* at ${{ steps.wait.outputs.approved_at }}\n\n• *production* starts in ~12 min\n• *production-italy* starts in ~17 min"
+                  text: "[TEST] ✅ *Production deploy approved*\n\nApproved by *${{ steps.wait.outputs.approver }}* at ${{ steps.wait.outputs.approved_at }}"
 
       - name: Post cancellation to Slack
         if: failure()
@@ -118,4 +121,4 @@ jobs:
               - type: section
                 text:
                   type: mrkdwn
-                  text: "[TEST] ❌ *Production deploy cancelled*\n\nReason: ${{ steps.wait.outputs.result == 'rejected' && format('rejected by {0}', steps.wait.outputs.approver) || 'no approval before deadline' }}\n\nNo deploy will happen."
+                  text: "[TEST] ❌ *Production deploy cancelled*\n\nReason: ${{ steps.wait.outputs.result == 'rejected' && format('rejected by {0}', steps.wait.outputs.approver) || 'no approval before deadline' }}"

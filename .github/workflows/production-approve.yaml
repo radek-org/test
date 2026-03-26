@@ -15,7 +15,7 @@ on:
         required: true
 
 permissions:
-  actions: write
+  contents: write
 
 jobs:
   record:
@@ -24,7 +24,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Write decision to GitHub variable
+      - name: Write decision to state file
         id: write
         run: |
           TODAY=$(date -u +%Y-%m-%d)
@@ -42,12 +42,20 @@ jobs:
             VERB="rejected"
           fi
 
-          gh api --method PATCH /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
-            -f name=PRODUCTION_APPROVAL_STATE \
-            -f "value=$VALUE" 2>/dev/null || \
-          gh api --method POST /repos/radek-org/test/actions/variables \
-            -f name=PRODUCTION_APPROVAL_STATE \
-            -f "value=$VALUE"
+          ENCODED=$(echo "$VALUE" | base64 -w 0)
+          EXISTING_SHA=$(gh api /repos/radek-org/test/contents/.github/approval-state.json \
+            --jq '.sha' 2>/dev/null || echo '')
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api --method PUT /repos/radek-org/test/contents/.github/approval-state.json \
+              -f "message=Deploy $VERB by $APPROVER" \
+              -f "content=$ENCODED" \
+              -f "sha=$EXISTING_SHA"
+          else
+            gh api --method PUT /repos/radek-org/test/contents/.github/approval-state.json \
+              -f "message=Deploy $VERB by $APPROVER" \
+              -f "content=$ENCODED"
+          fi
 
           echo "emoji=$EMOJI" >> $GITHUB_OUTPUT
           echo "verb=$VERB" >> $GITHUB_OUTPUT
