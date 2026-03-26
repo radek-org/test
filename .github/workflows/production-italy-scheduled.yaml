@@ -7,8 +7,12 @@ jobs:
     name: Deploy (echo only)
     runs-on: ubuntu-latest
     steps:
+      - name: Get timestamp
+        id: ts
+        run: echo "time=$(date -u '+%H:%M UTC')" >> $GITHUB_OUTPUT
+
       - name: Simulate deploy
-        run: echo "[TEST] Would deploy production-italy here at $(date -u)"
+        run: echo "[TEST] Would deploy production-italy here at ${{ steps.ts.outputs.time }}"
 
       - name: Post to Slack
         uses: slackapi/slack-github-action@v2.1.0
@@ -17,9 +21,9 @@ jobs:
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
-            text: "[TEST] \u2705 Production-Italy deploy completed"
+            text: "[TEST] Production-Italy deploy completed at ${{ steps.ts.outputs.time }}"
             blocks:
               - type: section
                 text:
                   type: mrkdwn
-                  text: "[TEST] \u2705 *Production-Italy deploy completed* at $(date -u '+%H:%M UTC')"
+                  text: "[TEST] *Production-Italy deploy completed* at ${{ steps.ts.outputs.time }}"
