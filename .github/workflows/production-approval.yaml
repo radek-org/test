@@ -1,0 +1,121 @@
+name: '[TEST] Production deploy — approval'
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  approval:
+    name: Wait for approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Reset approval state for today
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          VALUE="{\"approved\":false,\"rejected\":false,\"date\":\"$TODAY\",\"approver\":\"\",\"approved_at\":\"\"}"
+
+          # Create or update repo variable PRODUCTION_APPROVAL_STATE
+          gh api --method PATCH /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
+            -f name=PRODUCTION_APPROVAL_STATE \
+            -f "value=$VALUE" 2>/dev/null || \
+          gh api --method POST /repos/radek-org/test/actions/variables \
+            -f name=PRODUCTION_APPROVAL_STATE \
+            -f "value=$VALUE"
+
+          echo "Approval state reset for $TODAY"
+
+      - name: Post approval request to Slack
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
+            text: "[TEST] Production deploy approval request"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "*[TEST] Production deploy scheduled for today*\n\n• *production* deploys in ~12 minutes\n• *production-italy* deploys in ~17 minutes\n\nApproval required within the next 12 minutes. If not approved, deploy will be skipped."
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "👉 <https://github.com/radek-org/test/actions/workflows/production-approve.yaml|Click here to Approve or Reject>\n_(GitHub → Actions → Run workflow)_"
+              - type: context
+                elements:
+                  - type: mrkdwn
+                    text: "Triggered at $(date -u '+%H:%M UTC')"
+
+      - name: Wait for approval
+        id: wait
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          DEADLINE=$(date -u -d "+25 minutes" +%s)
+          echo "Waiting for approval for up to 25 minutes..."
+
+          while [ "$(date -u +%s)" -lt "$DEADLINE" ]; do
+            STATUS=$(gh api /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
+              --jq '.value' 2>/dev/null || echo '{}')
+
+            DATE=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('date',''))" 2>/dev/null)
+            APPROVED=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(str(d.get('approved',False)).lower())" 2>/dev/null)
+            REJECTED=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(str(d.get('rejected',False)).lower())" 2>/dev/null)
+            APPROVER=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('approver',''))" 2>/dev/null)
+            APPROVED_AT=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('approved_at',''))" 2>/dev/null)
+
+            if [ "$DATE" = "$TODAY" ] && [ "$APPROVED" = "true" ]; then
+              echo "result=approved" >> $GITHUB_OUTPUT
+              echo "approver=$APPROVER" >> $GITHUB_OUTPUT
+              echo "approved_at=$APPROVED_AT" >> $GITHUB_OUTPUT
+              echo "✅ Approved by $APPROVER at $APPROVED_AT"
+              exit 0
+            fi
+
+            if [ "$DATE" = "$TODAY" ] && [ "$REJECTED" = "true" ]; then
+              echo "result=rejected" >> $GITHUB_OUTPUT
+              echo "approver=$APPROVER" >> $GITHUB_OUTPUT
+              echo "❌ Rejected by $APPROVER"
+              exit 1
+            fi
+
+            echo "Not yet approved — checking again in 30s (deadline: $(date -u -d @$DEADLINE '+%H:%M UTC'))"
+            sleep 30
+          done
+
+          echo "result=timeout" >> $GITHUB_OUTPUT
+          echo "⏰ Deadline reached — no approval received"
+          exit 1
+
+      - name: Post approval confirmed to Slack
+        if: success()
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
+            text: "[TEST] ✅ Production deploy approved — deploys will start shortly"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "[TEST] ✅ *Production deploy approved*\n\nApproved by *${{ steps.wait.outputs.approver }}* at ${{ steps.wait.outputs.approved_at }}\n\n• *production* starts in ~12 min\n• *production-italy* starts in ~17 min"
+
+      - name: Post cancellation to Slack
+        if: failure()
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
+            text: "[TEST] ❌ Production deploy cancelled"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "[TEST] ❌ *Production deploy cancelled*\n\nReason: ${{ steps.wait.outputs.result == 'rejected' && format('rejected by {0}', steps.wait.outputs.approver) || 'no approval before deadline' }}\n\nNo deploy will happen."

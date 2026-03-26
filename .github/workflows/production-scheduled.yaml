@@ -1,0 +1,83 @@
+name: '[TEST] Deploy last ci tag to PRODUCTION (scheduled)'
+permissions: write-all
+on:
+  workflow_dispatch:
+
+jobs:
+  check_approval:
+    name: Check approval
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+      approver: ${{ steps.check.outputs.approver }}
+      approved_at: ${{ steps.check.outputs.approved_at }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Read approval state from GitHub variable
+        id: check
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          STATUS=$(gh api /repos/radek-org/test/actions/variables/PRODUCTION_APPROVAL_STATE \
+            --jq '.value' 2>/dev/null || echo '{}')
+
+          APPROVED=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('true' if d.get('approved') and d.get('date') == '$TODAY' else 'false')" 2>/dev/null || echo 'false')
+          APPROVER=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('approver','unknown'))" 2>/dev/null || echo 'unknown')
+          APPROVED_AT=$(echo "$STATUS" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('approved_at',''))" 2>/dev/null || echo '')
+
+          echo "approved=$APPROVED" >> $GITHUB_OUTPUT
+          echo "approver=$APPROVER" >> $GITHUB_OUTPUT
+          echo "approved_at=$APPROVED_AT" >> $GITHUB_OUTPUT
+          echo "Approval status: $APPROVED (by: $APPROVER at $APPROVED_AT)"
+
+  notify_skipped:
+    name: Notify skipped
+    needs: check_approval
+    if: needs.check_approval.outputs.approved != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
+            text: "[TEST] ⚠️ Production deploy skipped — no valid approval for today"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "[TEST] ⚠️ *Production deploy skipped*\n\nNo valid approval found for today. Deploy did not run."
+
+  notify_starting:
+    name: Notify deploy starting
+    needs: check_approval
+    if: needs.check_approval.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_DEPLOYMENTS_CHANNEL_ID }}"
+            text: "[TEST] 🚀 Production deploy starting"
+            blocks:
+              - type: section
+                text:
+                  type: mrkdwn
+                  text: "[TEST] 🚀 *Production deploy starting*\n\nApproved by: *${{ needs.check_approval.outputs.approver }}* at ${{ needs.check_approval.outputs.approved_at }}"
+
+  deploy:
+    name: Deploy (echo only)
+    needs: [check_approval, notify_starting]
+    if: needs.check_approval.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate deploy
+        run: |
+          echo "✅ [TEST] Would deploy production here"
+          echo "Approved by: ${{ needs.check_approval.outputs.approver }}"
+          echo "Approved at: ${{ needs.check_approval.outputs.approved_at }}"
